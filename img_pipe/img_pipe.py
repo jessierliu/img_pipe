@@ -207,6 +207,154 @@ class freeCoG:
         os.environ['FREESURFER_HOME'] = fs_dir
         os.environ['SUBJECTS_DIR'] = subj_dir
 
+    def auto_2D_brain(self, hem=None, azimuth=None, elevation=90,
+                      elecfile_prefix='TDT_elecs_all', template=None,
+                      force=False, brain_file=None, elecs_2D_file=None):
+        """Generate 2D screenshot of the brain at a specified azimuth and
+        elevation, and return projected 2D coordinates of electrodes at this
+        view.
+
+        Some code for projection taken from example_mlab_3D_to_2D
+        by S. Chris Colbert <sccolbert@gmail.com>,
+        see: http://docs.enthought.com/mayavi/mayavi/auto/example_mlab_3D_to_2D.html
+        
+        Parameters
+        ----------
+        hem : {None, 'lh', 'rh', 'both'}
+            Hemisphere to show. If None, defaults to self.hem.  
+        azimuth : float
+            Azimuth for brain plot. Normally azimuth=180 for lh, azimuth=0 for rh
+        elevation : float
+            Elevation for brain plot
+        elecfile_prefix: str
+            prefix of the .mat with the electrode coordinates matrix
+        template : str or None
+            Name of the atlas template (if used instead of the subject's brain)
+        force : bool
+            Force re-creation of the image and 2D coordinates even if the files
+            exist.
+        brain_file: (optional) None or str
+            Filename used when saving 2D brain image. If None, filename is
+            automatically generated based on view orientation.
+        elecs_2D_file: (optional) None or str
+            Filename used when saving electrode position file. If None,
+            filename is automatically generated based on view orientation.
+        
+        Returns
+        -------
+        brain_image : array-like
+            2D brain image
+        elecmatrix_2D : array-like
+            elecs x 2 matrix of coordinates in 2D that match brain_image and
+            can be plotted using matplotlib pyplot instead of mayavi.
+        
+        """
+        # from PIL import Image
+
+        if hem is None:
+            roi_name = self.hem + '_pial'
+        elif hem == 'lh' or hem == 'rh':
+            roi_name = hem + '_pial'
+        else:
+            roi_name = 'pial'
+
+        if azimuth is None:
+            if self.hem == 'lh':
+                azimuth = 180
+            elif self.hem == 'rh':
+                azimuth = 0
+            else:
+                azimuth = 90
+
+        # Add the template to the file name if it is specified, also
+        # don't save the same template view over and over if it isn't
+        # necessary
+        if template is not None:
+            template_nm = template
+            mesh_dir = os.path.join(self.subj_dir, template, 'Meshes')
+        else:
+            template_nm = ''
+            mesh_dir = self.mesh_dir
+
+        # Path to each 2D file (a screenshot of the brain at a given angle,
+        # as well as the 2D projected electrode coordinates for that view).
+        if brain_file is None:
+            brain_file = os.path.join(mesh_dir, 'brain2D_az%d_el%d%s.png' %
+                                      (azimuth, elevation, template_nm))
+        if elecs_2D_file is None:
+            elecs_2D_file = os.path.join(self.elecs_dir,
+                                         '%s_2D_az%d_el%d%s.mat' %
+                                         (elecfile_prefix, azimuth, elevation,
+                                          template_nm))
+
+        # Test whether we already made the brain file
+        if os.path.isfile(brain_file) and force is False:
+            if not os.path.isfile(elecs_2D_file):
+                raise ValueError(
+                    'If brain_file is an existing file and force is False, '
+                    'elecs_2D_file must also be an existing file.')
+            # Get the file
+            # print("Loading previously saved file %s"%(brain_file))
+            # im = Image.open(brain_file)
+            # brain_image = np.asarray(im)
+            print('Brain image exists.')
+
+        else:
+            # Get pial surface and plot it at specified azimuth and elevation
+            pial = self.roi(name=roi_name)
+            mesh, points, mlab, brain_image, f = \
+                self.plot_brain(rois=[pial], screenshot=True, showfig=False,
+                                helper_call=True, azimuth=azimuth,
+                                elevation=elevation, template=template)
+
+            # Clip out the white space (there may be a better way to do this..)
+            brain_image, x_offset, y_offset = remove_whitespace(brain_image)
+
+            # Save as a png
+            # im = Image.fromarray(brain_image)
+            # im.save(brain_file)
+
+        # Test whether we already have the electrodes file
+        if os.path.isfile(elecs_2D_file) and force is False:
+            #print("Loading previously saved file %s"%(elecs_2D_file))
+            #elecmatrix_2D = scipy.io.loadmat(elecs_2D_file)['elecmatrix']
+            print('Coordinates exist.')
+
+        else:
+            # Get the 3D electrode matrix
+            e = self.get_elecs(elecfile_prefix=elecfile_prefix)
+            elecmatrix = e['elecmatrix']
+            
+            W = np.ones(elecmatrix.shape[0])
+            hmgns_world_coords = np.column_stack((elecmatrix, W))
+
+            # Get unnormalized view coordinates
+            combined_transform_mat = get_world_to_view_matrix(f.scene)
+            view_coords = \
+                apply_transform_to_points(hmgns_world_coords,
+                                          combined_transform_mat)
+
+            # Get normalized view coordinates
+            norm_view_coords = view_coords / (view_coords[:, 3].reshape(-1, 1))
+
+            # Transform from normalized coordinates to display coordinates (2D)
+            view_to_disp_mat = get_view_to_display_matrix(f.scene)
+            disp_coords = apply_transform_to_points(norm_view_coords,
+                                                    view_to_disp_mat)
+            elecmatrix_2D = np.zeros((elecmatrix.shape[0], 2))
+            for i in np.arange(elecmatrix.shape[0]):
+                elecmatrix_2D[i, :] = disp_coords[:, :2][i]
+
+            elecmatrix_2D[:, 0] = elecmatrix_2D[:, 0] - x_offset
+            elecmatrix_2D[:, 1] = elecmatrix_2D[:, 1] - y_offset
+
+            # print(elecmatrix_2D)
+
+            # scipy.io.savemat(elecs_2D_file, {'elecmatrix': elecmatrix_2D})
+            # mlab.close()
+
+        return brain_image, elecmatrix_2D
+
     def prep_recon(self):
         '''Prepares file directory structure of subj_dir, copies acpc-aligned               
         T1.nii to the 'orig' directory and converts to mgz format.
@@ -1832,7 +1980,7 @@ class freeCoG:
         rois : list of roi objects 
             (create an roi object like so:
             hipp_roi = patient.roi(name='lHipp', color=(0.5,0.1,0.8), opacity=1.0, 
-	                           representation='surface', gaussian=True)). 
+                               representation='surface', gaussian=True)). 
             See get_rois() method for available ROI names.
         elecs : array-like
             [nchans x 3] electrode coordinate matrix
@@ -1955,11 +2103,11 @@ class freeCoG:
         else:
             arr = []
 
-        if showfig:
-            mlab.show()
+        # if showfig:
+        #     mlab.show()
 
-        if not helper_call and not showfig:
-            mlab.close()
+        # if not helper_call and not showfig:
+        #     mlab.close()
 
         return mesh, points, mlab, arr, fh
     
@@ -2415,151 +2563,152 @@ class freeCoG:
         if showfig:
             mlab.show()
 
-    def auto_2D_brain(self, hem=None, azimuth=None, elevation=90,
-                      elecfile_prefix='TDT_elecs_all', template=None,
-                      force=False, brain_file=None, elecs_2D_file=None):
-        """Generate 2D screenshot of the brain at a specified azimuth and
-        elevation, and return projected 2D coordinates of electrodes at this
-        view.
+    # def auto_2D_brain(self, hem=None, azimuth=None, elevation=90,
+    #                   elecfile_prefix='TDT_elecs_all', template=None,
+    #                   force=False, brain_file=None, elecs_2D_file=None):
+    #     """Generate 2D screenshot of the brain at a specified azimuth and
+    #     elevation, and return projected 2D coordinates of electrodes at this
+    #     view.
 
-        Some code for projection taken from example_mlab_3D_to_2D
-        by S. Chris Colbert <sccolbert@gmail.com>,
-        see: http://docs.enthought.com/mayavi/mayavi/auto/example_mlab_3D_to_2D.html
+    #     Some code for projection taken from example_mlab_3D_to_2D
+    #     by S. Chris Colbert <sccolbert@gmail.com>,
+    #     see: http://docs.enthought.com/mayavi/mayavi/auto/example_mlab_3D_to_2D.html
         
-        Parameters
-        ----------
-        hem : {None, 'lh', 'rh', 'both'}
-            Hemisphere to show. If None, defaults to self.hem.  
-        azimuth : float
-            Azimuth for brain plot. Normally azimuth=180 for lh, azimuth=0 for rh
-        elevation : float
-            Elevation for brain plot
-        elecfile_prefix: str
-            prefix of the .mat with the electrode coordinates matrix
-        template : str or None
-            Name of the atlas template (if used instead of the subject's brain)
-        force : bool
-            Force re-creation of the image and 2D coordinates even if the files
-            exist.
-        brain_file: (optional) None or str
-            Filename used when saving 2D brain image. If None, filename is
-            automatically generated based on view orientation.
-        elecs_2D_file: (optional) None or str
-            Filename used when saving electrode position file. If None,
-            filename is automatically generated based on view orientation.
+    #     Parameters
+    #     ----------
+    #     hem : {None, 'lh', 'rh', 'both'}
+    #         Hemisphere to show. If None, defaults to self.hem.  
+    #     azimuth : float
+    #         Azimuth for brain plot. Normally azimuth=180 for lh, azimuth=0 for rh
+    #     elevation : float
+    #         Elevation for brain plot
+    #     elecfile_prefix: str
+    #         prefix of the .mat with the electrode coordinates matrix
+    #     template : str or None
+    #         Name of the atlas template (if used instead of the subject's brain)
+    #     force : bool
+    #         Force re-creation of the image and 2D coordinates even if the files
+    #         exist.
+    #     brain_file: (optional) None or str
+    #         Filename used when saving 2D brain image. If None, filename is
+    #         automatically generated based on view orientation.
+    #     elecs_2D_file: (optional) None or str
+    #         Filename used when saving electrode position file. If None,
+    #         filename is automatically generated based on view orientation.
         
-        Returns
-        -------
-        brain_image : array-like
-            2D brain image
-        elecmatrix_2D : array-like
-            elecs x 2 matrix of coordinates in 2D that match brain_image and
-            can be plotted using matplotlib pyplot instead of mayavi.
+    #     Returns
+    #     -------
+    #     brain_image : array-like
+    #         2D brain image
+    #     elecmatrix_2D : array-like
+    #         elecs x 2 matrix of coordinates in 2D that match brain_image and
+    #         can be plotted using matplotlib pyplot instead of mayavi.
         
-        """
-        from PIL import Image
+    #     """
+    #     from PIL import Image
 
-        if hem is None:
-            roi_name = self.hem + '_pial'
-        elif hem == 'lh' or hem == 'rh':
-            roi_name = hem + '_pial'
-        else:
-            roi_name = 'pial'
+    #     if hem is None:
+    #         roi_name = self.hem + '_pial'
+    #     elif hem == 'lh' or hem == 'rh':
+    #         roi_name = hem + '_pial'
+    #     else:
+    #         roi_name = 'pial'
 
-        if azimuth is None:
-            if self.hem == 'lh':
-                azimuth = 180
-            elif self.hem == 'rh':
-                azimuth = 0
-            else:
-                azimuth = 90
+    #     if azimuth is None:
+    #         if self.hem == 'lh':
+    #             azimuth = 180
+    #         elif self.hem == 'rh':
+    #             azimuth = 0
+    #         else:
+    #             azimuth = 90
 
-        # Add the template to the file name if it is specified, also
-        # don't save the same template view over and over if it isn't
-        # necessary
-        if template is not None:
-            template_nm = template
-            mesh_dir = os.path.join(self.subj_dir, template, 'Meshes')
-        else:
-            template_nm = ''
-            mesh_dir = self.mesh_dir
+    #     # Add the template to the file name if it is specified, also
+    #     # don't save the same template view over and over if it isn't
+    #     # necessary
+    #     if template is not None:
+    #         template_nm = template
+    #         mesh_dir = os.path.join(self.subj_dir, template, 'Meshes')
+    #     else:
+    #         template_nm = ''
+    #         mesh_dir = self.mesh_dir
 
-        # Path to each 2D file (a screenshot of the brain at a given angle,
-        # as well as the 2D projected electrode coordinates for that view).
-        if brain_file is None:
-            brain_file = os.path.join(mesh_dir, 'brain2D_az%d_el%d%s.png' %
-                                      (azimuth, elevation, template_nm))
-        if elecs_2D_file is None:
-            elecs_2D_file = os.path.join(self.elecs_dir,
-                                         '%s_2D_az%d_el%d%s.mat' %
-                                         (elecfile_prefix, azimuth, elevation,
-                                          template_nm))
+    #     # Path to each 2D file (a screenshot of the brain at a given angle,
+    #     # as well as the 2D projected electrode coordinates for that view).
+    #     if brain_file is None:
+    #         brain_file = os.path.join(mesh_dir, 'brain2D_az%d_el%d%s.png' %
+    #                                   (azimuth, elevation, template_nm))
+    #     if elecs_2D_file is None:
+    #         elecs_2D_file = os.path.join(self.elecs_dir,
+    #                                      '%s_2D_az%d_el%d%s.mat' %
+    #                                      (elecfile_prefix, azimuth, elevation,
+    #                                       template_nm))
 
-        # Test whether we already made the brain file
-        if os.path.isfile(brain_file) and force is False:
-            if not os.path.isfile(elecs_2D_file):
-                raise ValueError(
-                    'If brain_file is an existing file and force is False, '
-                    'elecs_2D_file must also be an existing file.')
-            # Get the file
-            # print("Loading previously saved file %s"%(brain_file))
-            im = Image.open(brain_file)
-            brain_image = np.asarray(im)
+    #     # Test whether we already made the brain file
+    #     if os.path.isfile(brain_file) and force is False:
+    #         if not os.path.isfile(elecs_2D_file):
+    #             raise ValueError(
+    #                 'If brain_file is an existing file and force is False, '
+    #                 'elecs_2D_file must also be an existing file.')
+    #         # Get the file
+    #         # print("Loading previously saved file %s"%(brain_file))
+    #         # im = Image.open(brain_file)
+    #         # brain_image = np.asarray(im)
+    #         print('Brain image exists.')
 
-        else:
-            # Get pial surface and plot it at specified azimuth and elevation
-            pial = self.roi(name=roi_name)
-            mesh, points, mlab, brain_image, f = \
-                self.plot_brain(rois=[pial], screenshot=True, showfig=False,
-                                helper_call=True, azimuth=azimuth,
-                                elevation=elevation, template=template)
+    #     else:
+    #         # Get pial surface and plot it at specified azimuth and elevation
+    #         pial = self.roi(name=roi_name)
+    #         mesh, points, mlab, brain_image, f = \
+    #             self.plot_brain(rois=[pial], screenshot=True, showfig=False,
+    #                             helper_call=True, azimuth=azimuth,
+    #                             elevation=elevation, template=template)
 
-            # Clip out the white space (there may be a better way to do this..)
-            brain_image, x_offset, y_offset = remove_whitespace(brain_image)
+    #         # Clip out the white space (there may be a better way to do this..)
+    #         brain_image, x_offset, y_offset = remove_whitespace(brain_image)
 
-            # Save as a png
-            im = Image.fromarray(brain_image)
-            im.save(brain_file)
+    #         # Save as a png
+    #         # im = Image.fromarray(brain_image)
+    #         # im.save(brain_file)
 
-        # Test whether we already have the electrodes file
-        if os.path.isfile(elecs_2D_file) and force is False:
-            #print("Loading previously saved file %s"%(elecs_2D_file))
-            elecmatrix_2D = scipy.io.loadmat(elecs_2D_file)['elecmatrix']
+    #     # Test whether we already have the electrodes file
+    #     if os.path.isfile(elecs_2D_file) and force is False:
+    #         #print("Loading previously saved file %s"%(elecs_2D_file))
+    #         elecmatrix_2D = scipy.io.loadmat(elecs_2D_file)['elecmatrix']
 
-        else:
-            # Get the 3D electrode matrix
-            e = self.get_elecs(elecfile_prefix=elecfile_prefix)
-            elecmatrix = e['elecmatrix']
+    #     else:
+    #         # Get the 3D electrode matrix
+    #         e = self.get_elecs(elecfile_prefix=elecfile_prefix)
+    #         elecmatrix = e['elecmatrix']
             
-            W = np.ones(elecmatrix.shape[0])
-            hmgns_world_coords = np.column_stack((elecmatrix, W))
+    #         W = np.ones(elecmatrix.shape[0])
+    #         hmgns_world_coords = np.column_stack((elecmatrix, W))
 
-            # Get unnormalized view coordinates
-            combined_transform_mat = get_world_to_view_matrix(f.scene)
-            view_coords = \
-                apply_transform_to_points(hmgns_world_coords,
-                                          combined_transform_mat)
+    #         # Get unnormalized view coordinates
+    #         combined_transform_mat = get_world_to_view_matrix(f.scene)
+    #         view_coords = \
+    #             apply_transform_to_points(hmgns_world_coords,
+    #                                       combined_transform_mat)
 
-            # Get normalized view coordinates
-            norm_view_coords = view_coords / (view_coords[:, 3].reshape(-1, 1))
+    #         # Get normalized view coordinates
+    #         norm_view_coords = view_coords / (view_coords[:, 3].reshape(-1, 1))
 
-            # Transform from normalized coordinates to display coordinates (2D)
-            view_to_disp_mat = get_view_to_display_matrix(f.scene)
-            disp_coords = apply_transform_to_points(norm_view_coords,
-                                                    view_to_disp_mat)
-            elecmatrix_2D = np.zeros((elecmatrix.shape[0], 2))
-            for i in np.arange(elecmatrix.shape[0]):
-                elecmatrix_2D[i, :] = disp_coords[:, :2][i]
+    #         # Transform from normalized coordinates to display coordinates (2D)
+    #         view_to_disp_mat = get_view_to_display_matrix(f.scene)
+    #         disp_coords = apply_transform_to_points(norm_view_coords,
+    #                                                 view_to_disp_mat)
+    #         elecmatrix_2D = np.zeros((elecmatrix.shape[0], 2))
+    #         for i in np.arange(elecmatrix.shape[0]):
+    #             elecmatrix_2D[i, :] = disp_coords[:, :2][i]
 
-            elecmatrix_2D[:, 0] = elecmatrix_2D[:, 0] - x_offset
-            elecmatrix_2D[:, 1] = elecmatrix_2D[:, 1] - y_offset
+    #         elecmatrix_2D[:, 0] = elecmatrix_2D[:, 0] - x_offset
+    #         elecmatrix_2D[:, 1] = elecmatrix_2D[:, 1] - y_offset
 
-            print(elecmatrix_2D)
+    #         print(elecmatrix_2D)
 
-            scipy.io.savemat(elecs_2D_file, {'elecmatrix': elecmatrix_2D})
-            mlab.close()
+    #         scipy.io.savemat(elecs_2D_file, {'elecmatrix': elecmatrix_2D})
+    #         mlab.close()
 
-        return brain_image, elecmatrix_2D
+    #     return brain_image, elecmatrix_2D
 
     def animate_scene(self, mlab, movie_name='movie', mix_type='smootherstep', 
                       start_stop_azimuth=(0, 360), start_stop_elevation=(90, 90), 
