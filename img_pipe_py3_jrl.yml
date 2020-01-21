@@ -3,11 +3,9 @@ channels:
   - menpo
   - defaults
 dependencies:
-  - appnope=0.1.0=py35hd172556_0
   - apptools=4.4.0=py35_0
-  - blas=1.0=mkl
   - configobj=5.0.6=py35_0
-  - cython=0.26.1=py35h55fee34_0
+  - cython=0.26.1
   - decorator=4.1.2=py35_0
   - envisage=4.5.1=py35_0
   - freetype=2.5.5=2
@@ -64,5 +62,3 @@ dependencies:
     - pyvtk==0.5.18
     - sympy==1.1.1
     - tqdm==4.15.0
-prefix: /anaconda3/envs/img_pipe_py3
-
